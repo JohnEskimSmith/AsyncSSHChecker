@@ -236,25 +236,36 @@ async def worker_single(target: NamedTuple,
 
         try:
             conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
-            _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
-            result_data_str = _result.stdout
-            conn.close()
-            status_data = True
         except Exception as e:
             await asyncio.sleep(0.005)
             try:
                 del future_connection
-            except:
+                conn.close()
+            except Exception as e:
                 pass
             result = create_template_error(target, str(e))
         else:
-            if status_data:
+            try:
+                _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
+                result_data_str = _result.stdout
+                conn.close()
+                status_data = True
+            except Exception as e:
+                await asyncio.sleep(0.005)
                 try:
-                    result = result_data_str.encode('utf-8')
+                    del future_connection
+                    del future_connection
+                    conn.close()
                 except:
-                    result = b'all good, but not command'
-                result = make_document_from_response(
-                    result, target)
+                    pass
+                result = create_template_error(target, str(e))
+        if status_data:
+            try:
+                result = result_data_str.encode('utf-8')
+            except:
+                result = b'all good, but not command'
+            result = make_document_from_response(
+                result, target)
         if result:
             success = return_value_from_dict(result, "data.ssh.status")
             if success == "success":
