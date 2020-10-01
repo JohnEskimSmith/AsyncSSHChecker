@@ -173,7 +173,8 @@ def create_template_error(target: NamedTuple,
 
 
 def make_document_from_response(buffer: bytes,
-                                target: NamedTuple) -> dict:
+                                target: NamedTuple,
+                                additions: dict = None) -> dict:
     """
     Обработка результата чтения байт из соединения
     - buffer - байты полученные от сервиса(из соединения)
@@ -209,7 +210,8 @@ def make_document_from_response(buffer: bytes,
         # отправлять в stdout
     except Exception as e:
         pass
-
+    if additions:
+        _default_record['data']['ssh']['result']['response'].update(additions)
     return update_line(_default_record, target)
 
 
@@ -236,16 +238,24 @@ async def worker_single(target: NamedTuple,
 
         try:
             conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
-        except Exception as e:
+
+        except Exception as e1:
             await asyncio.sleep(0.005)
             try:
-                del future_connection
                 conn.close()
-            except Exception as e:
+                del future_connection
+            except:
                 pass
-            result = create_template_error(target, str(e))
+            result = create_template_error(target, str(e1))
         else:
             try:
+                key = None
+                try:
+                    _key = conn.get_server_host_key()
+                    key = _key.get_fingerprint(hash_name='md5')
+                    key = key.lstrip('MD5:')
+                except:
+                    pass
                 _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
                 result_data_str = _result.stdout
                 conn.close()
@@ -253,9 +263,8 @@ async def worker_single(target: NamedTuple,
             except Exception as e:
                 await asyncio.sleep(0.005)
                 try:
-                    del future_connection
-                    del future_connection
                     conn.close()
+                    del future_connection
                 except:
                     pass
                 result = create_template_error(target, str(e))
@@ -264,8 +273,16 @@ async def worker_single(target: NamedTuple,
                 result = result_data_str.encode('utf-8')
             except:
                 result = b'all good, but not command'
+            add_info = None
+            if key:
+                add_info = {'fingerprint': key}
             result = make_document_from_response(
-                result, target)
+                result, target, add_info)
+            try:
+                conn.close()
+                del future_connection
+            except:
+                pass
         if result:
             success = return_value_from_dict(result, "data.ssh.status")
             if success == "success":
