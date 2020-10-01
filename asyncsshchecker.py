@@ -3,7 +3,7 @@
 __author__ = "SAI"
 __license__ = "GPLv3"
 __status__ = "Dev"
-
+from hashlib import md5, sha1, sha256, sha384, sha512
 from aioconsole import ainput
 from ipaddress import ip_address, ip_network
 from collections import namedtuple
@@ -237,8 +237,10 @@ async def worker_single(target: NamedTuple,
                                              known_hosts=None)
 
         try:
-            conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
-
+            if args.global_timeout:
+                conn = await future_connection
+            else:
+                conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
         except Exception as e1:
             await asyncio.sleep(0.005)
             try:
@@ -252,12 +254,15 @@ async def worker_single(target: NamedTuple,
                 key = None
                 try:
                     _key = conn.get_server_host_key()
-                    key = _key.get_fingerprint(hash_name='md5')
-                    key = key.lstrip('MD5:')
+                    _key_hex = sha256(_key.public_data).hexdigest()
+                    h_alg = _key.algorithm
+                    key = {h_alg.decode('utf-8'): {'openssl_sha256': _key_hex}}
                 except:
                     pass
-                _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
-                result_data_str = _result.stdout
+                if not args.only_check:
+                    _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
+                    result_data_str = _result.stdout
+
                 conn.close()
                 status_data = True
             except Exception as e:
@@ -270,12 +275,16 @@ async def worker_single(target: NamedTuple,
                 result = create_template_error(target, str(e))
         if status_data:
             try:
-                result = result_data_str.encode('utf-8')
+                if not args.only_check:
+                    result = result_data_str.encode('utf-8')
+                else:
+                    result = b'checked'
             except:
                 result = b'all good, but not command'
             add_info = None
             if key:
-                add_info = {'fingerprint': key}
+                add_info = {'fingerprint': []}
+                add_info['fingerprint'].append(key)
             result = make_document_from_response(
                 result, target, add_info)
             try:
@@ -301,6 +310,8 @@ async def worker_single(target: NamedTuple,
             if line:
                 await queue_out.put(line)
 
+async def worker_single_check():
+    pass
 
 async def write_to_stdout(object_file: BinaryIO,
                           record_str: str):
@@ -344,8 +355,12 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
             await queue_with_tasks.put(b"check for end")
             break
         if item:
-            task = asyncio.create_task(
-                worker_single(item, semaphore, queue_out))
+            if args.global_timeout:
+                task = asyncio.wait_for(worker_single(item, semaphore, queue_out), args.global_timeout)
+            else:
+                _task = worker_single(item, semaphore, queue_out)
+                task = asyncio.create_task(_task)
+
             await queue_with_tasks.put(task)
 
 
@@ -364,7 +379,10 @@ async def work_with_queue_tasks(queue_results: asyncio.Queue,
             await queue_prints.put(b"check for end")
             break
         if task:
-            await task
+            try:
+                await task
+            except:
+                pass
 
 
 async def work_with_queue_result(queue_out: asyncio.Queue,
@@ -540,11 +558,19 @@ if __name__ == "__main__":
         help='Sleep duration if the queue is full, default 1 sec. Size queue == senders')
 
     parser.add_argument(
+        "--global-timeout",
+        dest='global_timeout',
+        type=int,
+        help='time for one connection ssh')
+
+    parser.add_argument('--only-check', dest='only_check', action='store_true')
+
+    parser.add_argument(
         "-tconnect",
         "--timeout-connection",
         dest='timeout_connection',
         type=int,
-        default=5,
+        default=2,
         help='Set connection timeout for open_connection (default: 7)')
 
     parser.add_argument(
@@ -552,7 +578,7 @@ if __name__ == "__main__":
         "--timeout-read",
         dest='timeout_read',
         type=int,
-        default=5,
+        default=3,
         help='Set connection timeout for reader from connection (default: 7)')
 
     parser.add_argument(
