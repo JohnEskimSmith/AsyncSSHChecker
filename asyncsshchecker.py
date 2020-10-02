@@ -230,27 +230,15 @@ async def worker_single_run(target: NamedTuple,
     async with semaphore:
         result = None
         status_data = False
+        key = None
         try:
             future_connection = asyncssh.connect(host=target.ip,
                                                  port=target.port,
                                                  username=target.username,
                                                  password=target.password,
                                                  known_hosts=None)
-            #                                        options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
-            if args.global_timeout:
-                conn = await future_connection
-            else:
-                conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection+1)
-        except:
-            try:
-                await asyncio.sleep(0.005)
-                await conn.close()
-            except:
-                pass
-            result = create_template_error(target, str(''))
-        else:
-            try:
-                key = None
+            conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
+            async with conn:
                 try:
                     _key = conn.get_server_host_key()
                     _key_hex = sha256(_key.public_data).hexdigest()
@@ -261,20 +249,12 @@ async def worker_single_run(target: NamedTuple,
                 try:
                     _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
                     result_data_str = _result.stdout
-                    status_data = True  # trivial check that's all Ok? need rethink
                 except Exception as e:
                     result_data_str = str(e)
-                try:
-                    await conn.close()
-                except:
-                    pass
-            except:
-                await asyncio.sleep(0.005)
-                try:
-                    await conn.close()
-                except:
-                    pass
-                result = create_template_error(target, str(""))
+                status_data = True  # trivial check that's all Ok? need rethink
+        except Exception as e:
+            result = create_template_error(target, str(e))
+            await asyncio.sleep(0.005)
         if status_data:
             try:
                 result = result_data_str.encode('utf-8')
@@ -355,10 +335,7 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
                 _task = worker_single_run(item, semaphore, queue_out)
             else:
                 _task = worker_single_fingerprint(item, semaphore, queue_out)
-            if args.global_timeout:
-                task = asyncio.wait_for(_task, args.global_timeout)
-            else:
-                task = asyncio.create_task(_task)
+            task = asyncio.create_task(_task)
             await queue_with_tasks.put(task)
 
 
@@ -530,13 +507,8 @@ if __name__ == "__main__":
         default=1,
         help='Sleep duration if the queue is full, default 1 sec. Size queue == senders')
 
-    parser.add_argument(
-        "--global-timeout",
-        dest='global_timeout',
-        type=int,
-        help='time for one connection ssh')
-
     parser.add_argument('--fingerprint', dest='fingerprint', action='store_true')
+
 
     parser.add_argument(
         "-tconnect",
