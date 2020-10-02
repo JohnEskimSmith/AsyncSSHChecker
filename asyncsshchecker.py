@@ -249,9 +249,10 @@ async def worker_single_run(target: NamedTuple,
                 try:
                     _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
                     result_data_str = _result.stdout
+                    status_data = True  # trivial check that's all Ok? need rethink
                 except Exception as e:
-                    result_data_str = str(e)
-                status_data = True  # trivial check that's all Ok? need rethink
+                    result = create_template_error(target, str(e))
+                    await asyncio.sleep(0.005)
         except Exception as e:
             result = create_template_error(target, str(e))
             await asyncio.sleep(0.005)
