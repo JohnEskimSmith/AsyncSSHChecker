@@ -234,12 +234,13 @@ async def worker_single_run(target: NamedTuple,
                                              port=target.port,
                                              username=target.username,
                                              password=target.password,
-                                             known_hosts=None)
+                                             known_hosts=None,
+                                             options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
         try:
             if args.global_timeout:
                 conn = await future_connection
             else:
-                conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
+                conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection+1)
         except Exception as e1:
             await asyncio.sleep(0.005)
             try:
