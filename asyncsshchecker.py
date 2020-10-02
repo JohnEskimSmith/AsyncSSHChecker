@@ -230,13 +230,13 @@ async def worker_single_run(target: NamedTuple,
     async with semaphore:
         result = None
         status_data = False
-        future_connection = asyncssh.connect(host=target.ip,
-                                             port=target.port,
-                                             username=target.username,
-                                             password=target.password,
-                                             known_hosts=None)
-    #                                        options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
         try:
+            future_connection = asyncssh.connect(host=target.ip,
+                                                 port=target.port,
+                                                 username=target.username,
+                                                 password=target.password,
+                                                 known_hosts=None)
+            #                                        options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
             if args.global_timeout:
                 conn = await future_connection
             else:
@@ -244,7 +244,7 @@ async def worker_single_run(target: NamedTuple,
         except:
             try:
                 await asyncio.sleep(0.005)
-                conn.close()
+                await conn.close()
             except:
                 pass
             result = create_template_error(target, str(''))
@@ -265,13 +265,13 @@ async def worker_single_run(target: NamedTuple,
                 except Exception as e:
                     result_data_str = str(e)
                 try:
-                    conn.close()
+                    await conn.close()
                 except:
                     pass
             except:
                 await asyncio.sleep(0.005)
                 try:
-                    conn.close()
+                    await conn.close()
                 except:
                     pass
                 result = create_template_error(target, str(""))
