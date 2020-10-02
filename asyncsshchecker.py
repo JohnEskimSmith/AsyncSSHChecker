@@ -234,20 +234,20 @@ async def worker_single_run(target: NamedTuple,
                                              port=target.port,
                                              username=target.username,
                                              password=target.password,
-                                             known_hosts=None,
-                                             options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
+                                             known_hosts=None)
+    #                                        options=asyncssh.SSHClientConnectionOptions(login_timeout=target.timeout_connection))
         try:
             if args.global_timeout:
                 conn = await future_connection
             else:
                 conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection+1)
-        except Exception as e1:
+        except:
             try:
                 await asyncio.sleep(0.005)
                 conn.close()
             except:
                 pass
-            result = create_template_error(target, str(e1))
+            result = create_template_error(target, str(''))
         else:
             try:
                 key = None
@@ -268,13 +268,13 @@ async def worker_single_run(target: NamedTuple,
                     conn.close()
                 except:
                     pass
-            except Exception as e:
+            except:
                 await asyncio.sleep(0.005)
                 try:
                     conn.close()
                 except:
                     pass
-                result = create_template_error(target, str(e))
+                result = create_template_error(target, str(""))
         if status_data:
             try:
                 result = result_data_str.encode('utf-8')
