@@ -242,8 +242,8 @@ async def worker_single_run(target: NamedTuple,
             else:
                 conn = await asyncio.wait_for(future_connection, timeout=target.timeout_connection+1)
         except Exception as e1:
-            await asyncio.sleep(0.005)
             try:
+                await asyncio.sleep(0.005)
                 conn.close()
             except:
                 pass
