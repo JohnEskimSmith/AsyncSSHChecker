@@ -159,7 +159,7 @@ def create_template_struct(target: NamedTuple) -> dict:
 def create_template_error(target: NamedTuple,
                           error_str: str) -> dict:
     """
-    функция создает шаблон ошибочной записи(результата), добавляет строку error_str
+    create template record, add error_str to record
     :param target:
     :param error_str:
     :return:
@@ -204,18 +204,18 @@ def make_document_from_response(buffer: bytes,
     _default_record['data']['ssh']['result']['response']['request']['username'] = target.username
     _default_record['data']['ssh']['result']['response']['request']['password'] = target.password
     try:
-        _base64_data = base64_b64encode(buffer).decode('utf-8')
-        _default_record['data']['ssh']['result']['response']['body_raw'] = _base64_data
-        # _base64_data - содержит байты в base64 - для того чтоб их удобно было
-        # отправлять в stdout
+        if buffer:
+            _base64_data = base64_b64encode(buffer).decode('utf-8')
+            _default_record['data']['ssh']['result']['response']['body_raw'] = _base64_data
     except Exception as e:
         pass
     if additions:
-        _default_record['data']['ssh']['result']['response'].update(additions)
+        if isinstance(additions, dict):
+            _default_record['data']['ssh']['result']['response'].update(additions)
     return update_line(_default_record, target)
 
 
-async def worker_single(target: NamedTuple,
+async def worker_single_run(target: NamedTuple,
                         semaphore: asyncio.Semaphore,
                         queue_out: asyncio.Queue) -> None:
     """
@@ -235,7 +235,6 @@ async def worker_single(target: NamedTuple,
                                              username=target.username,
                                              password=target.password,
                                              known_hosts=None)
-
         try:
             if args.global_timeout:
                 conn = await future_connection
@@ -245,7 +244,6 @@ async def worker_single(target: NamedTuple,
             await asyncio.sleep(0.005)
             try:
                 conn.close()
-                del future_connection
             except:
                 pass
             result = create_template_error(target, str(e1))
@@ -259,26 +257,26 @@ async def worker_single(target: NamedTuple,
                     key = {h_alg.decode('utf-8'): {'openssl_sha256': _key_hex}}
                 except:
                     pass
-                if not args.only_check:
+                try:
                     _result = await conn.run(target.command, check=True, timeout=target.timeout_read)
                     result_data_str = _result.stdout
-
-                conn.close()
-                status_data = True
+                    status_data = True  # trivial check that's all Ok? need rethink
+                except Exception as e:
+                    result_data_str = str(e)
+                try:
+                    conn.close()
+                except:
+                    pass
             except Exception as e:
                 await asyncio.sleep(0.005)
                 try:
                     conn.close()
-                    del future_connection
                 except:
                     pass
                 result = create_template_error(target, str(e))
         if status_data:
             try:
-                if not args.only_check:
-                    result = result_data_str.encode('utf-8')
-                else:
-                    result = b'checked'
+                result = result_data_str.encode('utf-8')
             except:
                 result = b'all good, but not command'
             add_info = None
@@ -287,11 +285,6 @@ async def worker_single(target: NamedTuple,
                 add_info['fingerprint'].append(key)
             result = make_document_from_response(
                 result, target, add_info)
-            try:
-                conn.close()
-                del future_connection
-            except:
-                pass
         if result:
             success = return_value_from_dict(result, "data.ssh.status")
             if success == "success":
@@ -310,7 +303,10 @@ async def worker_single(target: NamedTuple,
             if line:
                 await queue_out.put(line)
 
-async def worker_single_check():
+
+async def worker_single_fingerprint(target: NamedTuple,
+                        semaphore: asyncio.Semaphore,
+                        queue_out: asyncio.Queue) -> None:
     pass
 
 async def write_to_stdout(object_file: BinaryIO,
@@ -349,18 +345,19 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
     """
     semaphore = asyncio.Semaphore(count)
     while True:
-        # wait for an item from the "start_application"
-        item = await queue_with_input.get()
+        item = await queue_with_input.get()  # item Target
         if item == b"check for end":
             await queue_with_tasks.put(b"check for end")
             break
         if item:
-            if args.global_timeout:
-                task = asyncio.wait_for(worker_single(item, semaphore, queue_out), args.global_timeout)
+            if not args.fingerprint:
+                _task = worker_single_run(item, semaphore, queue_out)
             else:
-                _task = worker_single(item, semaphore, queue_out)
+                _task = worker_single_fingerprint(item, semaphore, queue_out)
+            if args.global_timeout:
+                task = asyncio.wait_for(_task, args.global_timeout)
+            else:
                 task = asyncio.create_task(_task)
-
             await queue_with_tasks.put(task)
 
 
@@ -495,31 +492,6 @@ def checkfile(path_to_file: str) -> bool:
     return path.isfile(path_to_file)
 
 
-def parse_payloads_files(payload_files: List[str]) -> List[str]:
-    """
-    функция проверяет наличие файлов, переданных в настройках
-    :param payload_files:
-    :return:
-    """
-    result = [
-        path_to_file for path_to_file in payload_files if checkfile(path_to_file)]
-    return result
-
-
-def return_bytes_from_single_payload(string_base64: str) -> bytes:
-    """
-    функция принимает строку(str) base64 - в которой закодирован bytes payload, который она  возвращает
-    :param string_base64:
-    :return:
-    """
-    try:
-        _payload = string_base64.encode('utf-8')
-        payload = base64_b64decode(_payload)
-        return payload
-    except Exception as e:
-        pass
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Async SSH checker lite(asyncio)')
     parser.add_argument(
@@ -563,7 +535,7 @@ if __name__ == "__main__":
         type=int,
         help='time for one connection ssh')
 
-    parser.add_argument('--only-check', dest='only_check', action='store_true')
+    parser.add_argument('--fingerprint', dest='fingerprint', action='store_true')
 
     parser.add_argument(
         "-tconnect",
@@ -578,7 +550,7 @@ if __name__ == "__main__":
         "--timeout-read",
         dest='timeout_read',
         type=int,
-        default=3,
+        default=2,
         help='Set connection timeout for reader from connection (default: 7)')
 
     parser.add_argument(
