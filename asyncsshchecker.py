@@ -118,6 +118,22 @@ def create_target_ssh_protocol(ip_str: str,
     Target = namedtuple('Target', key_names)
     current_settings['ip'] = ip_str
     current_settings['command'] = 'ls -la1'
+    current_settings['ip'] = ip_str
+    # if current_settings['algorithms']:
+    #     for algorithm in current_settings['algorithms']:
+    #         tmp_settings = copy.copy(current_settings)
+    #         tmp_settings['algorithm'] = algorithm
+    #         _payload_base64 = base64_standard_b64encode(
+    #             payload).decode('utf-8')
+    #         # _additions - необходимы для информации, какой payload был
+    #         # направлен
+    #         _additions = {'data_payload':
+    #                           {'payload_raw': _payload_base64,
+    #                            'variables': []}
+    #                       }
+    #         tmp_settings['additions'] = _additions
+    #         target = Target(**tmp_settings)
+    #         yield target
     target = Target(**current_settings)
     yield target
 
@@ -201,8 +217,11 @@ def make_document_from_response(buffer: bytes,
     _default_record['data']['ssh']['status'] = "success"
     _default_record['data']['ssh']['result']['response']['content_length'] = len(
         buffer)
-    _default_record['data']['ssh']['result']['response']['request']['username'] = target.username
-    _default_record['data']['ssh']['result']['response']['request']['password'] = target.password
+    try:
+        _default_record['data']['ssh']['result']['response']['request']['username'] = target.username
+        _default_record['data']['ssh']['result']['response']['request']['password'] = target.password
+    except:
+        pass
     try:
         if buffer:
             _base64_data = base64_b64encode(buffer).decode('utf-8')
@@ -289,7 +308,80 @@ async def worker_single_run(target: NamedTuple,
 async def worker_single_fingerprint(target: NamedTuple,
                         semaphore: asyncio.Semaphore,
                         queue_out: asyncio.Queue) -> None:
-    pass
+    global count_good
+    global count_error
+    async with semaphore:
+        result = None
+        _results = []
+        for algorithm in target.algorithms:
+            status = False
+            key = None
+            try:
+
+                if algorithm != 'host':
+                    future_connection = asyncssh.get_server_host_key(host=target.ip,
+                                                                     port=target.port,
+                                                                     server_host_key_algs=algorithm)
+                    status = True
+
+                elif algorithm == 'host':
+                    future_connection = asyncssh.get_server_host_key(host=target.ip,
+                                                                     port=target.port)
+                    status = True
+
+                if status:
+                    key = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
+
+                if key:
+                    function_hash = default_host_key_algorithms[algorithm]
+                    function_hash_name = default_host_key_algorithms[algorithm].__name__
+                    function_hash_name = function_hash_name.replace('openssl_', '')
+                    _key_hex = function_hash(key.public_data).hexdigest()
+
+                    # key_md5 = ':'.join(_key_md5[i:i + 2] for i in range(0, len(_key_md5), 2))
+                    if algorithm == 'host':
+                        _current_algorithm = key.algorithm
+                        current_algorithm = _current_algorithm.decode('utf-8')
+                    else:
+                        current_algorithm = algorithm
+
+                    _results.append({current_algorithm: {function_hash_name:_key_hex}})
+                    # host_current_algorithm = _host_current_algorithm
+                    # if algorithm != 'None':
+                    #     _hash = default_host_key_algorithms[algorithm].__name__
+                    #     _hash = _hash.lstrip('openssl_')
+                    #     _results.append({host_current_algorithm:
+                    #                        {_hash: _key_hex}})
+                    # else:
+                    #     _results.append({host_current_algorithm: {'sha256': _key_hex}})
+            except:
+                pass
+        if _results:
+            result = b''
+            add_info = {'fingerprint': _results}
+            result = make_document_from_response(
+                result, target, add_info)
+        else:
+            result = create_template_error(target, 'no results')
+            await asyncio.sleep(0.005)
+        if result:
+            success = return_value_from_dict(result, "data.ssh.status")
+            if success == "success":
+                count_good += 1
+            else:
+                count_error += 1
+            line = None
+            try:
+                if args.show_only_success:
+                    if success == "success":
+                        line = ujson_dumps(result)
+                else:
+                    line = ujson_dumps(result)
+            except Exception as e:
+                pass
+            if line:
+                await queue_out.put(line)
+
 
 async def write_to_stdout(object_file: BinaryIO,
                           record_str: str):
@@ -355,10 +447,10 @@ async def work_with_queue_tasks(queue_results: asyncio.Queue,
             await queue_prints.put(b"check for end")
             break
         if task:
-            try:
-                await task
-            except:
-                pass
+            # try:
+            await task
+            # except:
+            #     pass
 
 
 async def work_with_queue_result(queue_out: asyncio.Queue,
@@ -481,39 +573,44 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-f",
-        "--input-file",
+        "--input-file=",
         dest='input_file',
         type=str,
         help="path to file with targets")
 
     parser.add_argument(
         "-o",
-        "--output-file",
+        "--output-file=",
         dest='output_file',
         type=str,
         help="path to file with results")
 
     parser.add_argument(
         "-s",
-        "--senders",
+        "--senders=",
         dest='senders',
         type=int,
-        default=1024,
-        help="Number of send coroutines to use (default: 1024)")
+        default=256,
+        help="Number of send coroutines to use (default: 256)")
 
     parser.add_argument(
-        "--queue-sleep",
+        "--queue-sleep=",
         dest='queue_sleep',
         type=int,
         default=1,
         help='Sleep duration if the queue is full, default 1 sec. Size queue == senders')
 
-    parser.add_argument('--fingerprint', dest='fingerprint', action='store_true')
+    parser.add_argument(
+        '--fingerprint-host-key-algorithms=',
+        dest='fingerprint',
+        type=str,
+        help='Only fingerprint SSH. Set SSH Host Key Algorithms (default: ssh-rsa). host-key-algorithms in '
+             'ssh-rsa,ecdsa-sha2-nistp256,ssh-ed25519 or host')
 
 
     parser.add_argument(
         "-tconnect",
-        "--timeout-connection",
+        "--timeout-connection=",
         dest='timeout_connection',
         type=int,
         default=2,
@@ -521,7 +618,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-tread",
-        "--timeout-read",
+        "--timeout-read=",
         dest='timeout_read',
         type=int,
         default=2,
@@ -529,7 +626,8 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-p",
-        "--port",
+        "--port=",
+        dest='port',
         type=int,
         default=22,
         help='Specify port (default: 22)')
@@ -540,10 +638,10 @@ if __name__ == "__main__":
         action='store_true')
     # endregion
 
-    parser.add_argument("--user", dest='single_user', type=str,
+    parser.add_argument("--user=", dest='single_user', type=str,
                         help='single username')
 
-    parser.add_argument("--password", dest='single_password', type=str,
+    parser.add_argument("--password=", dest='single_password', type=str,
                         help='single password')
 
     parser.add_argument(
@@ -553,7 +651,6 @@ if __name__ == "__main__":
 
     path_to_file_targets = None  # set default None to inputfile
     args = parser.parse_args()
-
     if args.settings:
         pass  # TODO реализовать позднее чтение настроек из файла
     else:
@@ -586,10 +683,40 @@ if __name__ == "__main__":
 
     settings = {'port': args.port,
                 'timeout_connection': args.timeout_connection,
-                'timeout_read': args.timeout_read,
-                'username': args.single_user,
-                'password': args.single_password
-                }
+                'timeout_read': args.timeout_read}
+    if not args.fingerprint:
+        try:
+            _settings = {
+                        'username': args.single_user,
+                        'password': args.single_password
+                        }
+            settings.update(_settings)
+        except:
+            print('Exit, username, passwords?')
+            exit(1)
+    else:
+        default_host_key_algorithms = {'ssh-rsa': md5, 'ecdsa-sha2-nistp256': sha256,
+                                       'ssh-ed25519': sha256, 'host': sha256}
+        _default_algorithms = ['ssh-rsa', 'ecdsa-sha2-nistp256', 'ssh-ed25519', 'host']
+        algorithms = []
+        if ',' in args.fingerprint:
+            algorithms = [alg for alg in args.fingerprint.split(',') if alg in  _default_algorithms]
+            if not algorithms:
+                print('Exit, error with host key algorithms?')
+                exit(1)
+        else:
+            if args.fingerprint == 'ssh-rsa':
+                algorithms = ['ssh-rsa']
+            elif args.fingerprint in _default_algorithms:
+                algorithms = [args.fingerprint]
+        if not algorithms:
+            print('Exit, error with host key algorithms?')
+            exit(1)
+        else:
+            _settings = {
+                        'algorithms': algorithms
+                        }
+            settings.update(_settings)
 
     count_cor = args.senders
     # region limits input Queue
