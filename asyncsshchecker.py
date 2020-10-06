@@ -14,17 +14,16 @@ import argparse
 import datetime
 import copy
 import uvloop
-import asyncio, asyncssh
+import asyncio
+import asyncssh
 
 from base64 import (b64encode as base64_b64encode,
-                    b64decode as base64_b64decode,
                     )
 
 
 from typing import (Any,
                     NamedTuple,
                     Iterator,
-                    List,
                     BinaryIO,
                     TextIO,
                     )
@@ -101,7 +100,6 @@ def check_network(net_str: str) -> bool:
         return False
 
 
-
 def create_target_ssh_protocol(ip_str: str,
                                settings: dict) -> Iterator:
     """
@@ -119,21 +117,6 @@ def create_target_ssh_protocol(ip_str: str,
     current_settings['ip'] = ip_str
     current_settings['command'] = 'ls -la1'
     current_settings['ip'] = ip_str
-    # if current_settings['algorithms']:
-    #     for algorithm in current_settings['algorithms']:
-    #         tmp_settings = copy.copy(current_settings)
-    #         tmp_settings['algorithm'] = algorithm
-    #         _payload_base64 = base64_standard_b64encode(
-    #             payload).decode('utf-8')
-    #         # _additions - необходимы для информации, какой payload был
-    #         # направлен
-    #         _additions = {'data_payload':
-    #                           {'payload_raw': _payload_base64,
-    #                            'variables': []}
-    #                       }
-    #         tmp_settings['additions'] = _additions
-    #         target = Target(**tmp_settings)
-    #         yield target
     target = Target(**current_settings)
     yield target
 
@@ -215,8 +198,9 @@ def make_document_from_response(buffer: bytes,
 
     _default_record = create_template_struct(target)
     _default_record['data']['ssh']['status'] = "success"
-    _default_record['data']['ssh']['result']['response']['content_length'] = len(
-        buffer)
+    if buffer:
+        _default_record['data']['ssh']['result']['response']['content_length'] = len(
+            buffer)
     try:
         _default_record['data']['ssh']['result']['response']['request']['username'] = target.username
         _default_record['data']['ssh']['result']['response']['request']['password'] = target.password
@@ -228,10 +212,121 @@ def make_document_from_response(buffer: bytes,
             _default_record['data']['ssh']['result']['response']['body_raw'] = _base64_data
     except Exception as e:
         pass
+    if args.fingerprint:
+        _default_record['data']['ssh']['result']['response'].pop("request")
     if additions:
         if isinstance(additions, dict):
             _default_record['data']['ssh']['result']['response'].update(additions)
     return update_line(_default_record, target)
+
+
+async def _get_server_host_key(host, port=(), *, tunnel=(), family=(), flags=0,
+                              local_addr=None, client_version=(), kex_algs=(),
+                              server_host_key_algs=(), config=(), options=None):
+    """Retrieve an SSH server's host key
+
+       This is a coroutine which can be run to connect to an SSH server and
+       return the server host key presented during the SSH handshake.
+
+       A list of server host key algorithms can be provided to specify
+       which host key types the server is allowed to choose from. If the
+       key exchange is successful, the server host key sent during the
+       handshake is returned.
+
+           .. note:: Not all key exchange methods involve the server
+                     presenting a host key. If something like GSS key
+                     exchange is used without a server host key, this
+                     method may return `None` even when the handshake
+                     completes.
+
+       :param host:
+           The hostname or address to connect to
+       :param port: (optional)
+           The port number to connect to. If not specified, the default
+           SSH port is used.
+       :param tunnel: (optional)
+           An existing SSH client connection that this new connection should
+           be tunneled over. If set, a direct TCP/IP tunnel will be opened
+           over this connection to the requested host and port rather than
+           connecting directly via TCP. A string of the form
+           [user@]host[:port] may also be specified, in which case a
+           connection will first be made to that host and it will then be
+           used as a tunnel.
+       :param family: (optional)
+           The address family to use when creating the socket. By default,
+           the address family is automatically selected based on the host.
+       :param flags: (optional)
+           The flags to pass to getaddrinfo() when looking up the host address
+       :param local_addr: (optional)
+           The host and port to bind the socket to before connecting
+       :param client_version: (optional)
+           An ASCII string to advertise to the SSH server as the version of
+           this client, defaulting to `'AsyncSSH'` and its version number.
+       :param kex_algs: (optional)
+           A list of allowed key exchange algorithms in the SSH handshake,
+           taken from :ref:`key exchange algorithms <KexAlgs>`
+       :param server_host_key_algs: (optional)
+           A list of server host key algorithms to allow during the SSH
+           handshake, taken from :ref:`server host key algorithms
+           <PublicKeyAlgs>`.
+       :param config: (optional)
+           Paths to OpenSSH client configuration files to load. This
+           configuration will be used as a fallback to override the
+           defaults for settings which are not explcitly specified using
+           AsyncSSH's configuration options. If no paths are specified,
+           an attempt will be made to load the configuration from the file
+           :file:`.ssh/config`. If this argument is explicitly set to
+           `None`, no OpenSSH configuration files will be loaded. See
+           :ref:`SupportedClientConfigOptions` for details on what
+           configuration options are currently supported.
+       :param options: (optional)
+           Options to use when establishing the SSH client connection used
+           to retrieve the server host key. These options can be specified
+           either through this parameter or as direct keyword arguments to
+           this function.
+       :type host: `str`
+       :type port: `int`
+       :type tunnel: :class:`SSHClientConnection` or `str`
+       :type family: `socket.AF_UNSPEC`, `socket.AF_INET`, or `socket.AF_INET6`
+       :type flags: flags to pass to :meth:`getaddrinfo() <socket.getaddrinfo>`
+       :type local_addr: tuple of `str` and `int`
+       :type client_version: `str`
+       :type kex_algs: `str` or `list` of `str`
+       :type server_host_key_algs: `str` or `list` of `str`
+       :type config: `list` of `str`
+       :type options: :class:`SSHClientConnectionOptions`
+
+       :returns: An :class:`SSHKey` public key or `None`
+
+    """
+
+    def conn_factory():
+        """Return an SSH client connection factory"""
+
+        return asyncssh.SSHClientConnection(loop, options, wait='kex')
+
+    loop = asyncio.get_event_loop()
+
+    options = asyncssh.SSHClientConnectionOptions(
+        options, config=config, host=host, port=port, tunnel=tunnel,
+        family=family, local_addr=local_addr, known_hosts=None,
+        server_host_key_algs=server_host_key_algs, x509_trusted_certs=None,
+        x509_trusted_cert_paths=None, x509_purposes='any', gss_host=None,
+        kex_algs=kex_algs, client_version=client_version)
+
+    conn = await asyncssh.connection._connect(options.host, options.port, loop, options.tunnel,
+                          options.family, flags, options.local_addr,
+                          conn_factory, 'Fetching server host key from')
+
+    server_host_key = conn.get_server_host_key()
+    try:
+        server_version = conn.get_extra_info('server_version')
+    except:
+        server_version = ''
+    conn.abort()
+
+    await conn.wait_closed()
+    return server_version, server_host_key
 
 
 async def worker_single_run(target: NamedTuple,
@@ -260,9 +355,19 @@ async def worker_single_run(target: NamedTuple,
             async with conn:
                 try:
                     _key = conn.get_server_host_key()
-                    _key_hex = sha256(_key.public_data).hexdigest()
+                    try:
+                        server_version = conn.get_extra_info('server_version')
+                    except:
+                        server_version = ''
+
                     h_alg = _key.algorithm
-                    key = {h_alg.decode('utf-8'): {'openssl_sha256': _key_hex}}
+                    h_alg = h_alg.decode('utf-8')
+                    if h_alg == "ssh-rsa":
+                        _key_hex = md5(_key.public_data).hexdigest()
+                        key = {h_alg: {'md5': _key_hex}}
+                    else:
+                        _key_hex = sha256(_key.public_data).hexdigest()
+                        key = {h_alg: {'sha256': _key_hex}}
                 except:
                     pass
                 try:
@@ -284,6 +389,8 @@ async def worker_single_run(target: NamedTuple,
             if key:
                 add_info = {'fingerprint': []}
                 add_info['fingerprint'].append(key)
+                if server_version:
+                    add_info['version'] = server_version
             result = make_document_from_response(
                 result, target, add_info)
         if result:
@@ -317,20 +424,21 @@ async def worker_single_fingerprint(target: NamedTuple,
             status = False
             key = None
             try:
-
                 if algorithm != 'host':
-                    future_connection = asyncssh.get_server_host_key(host=target.ip,
+                    future_connection = _get_server_host_key(host=target.ip,
                                                                      port=target.port,
-                                                                     server_host_key_algs=algorithm)
+                                                                     server_host_key_algs=algorithm,
+                                                                     client_version='AsyncSSHChecker')
                     status = True
 
                 elif algorithm == 'host':
-                    future_connection = asyncssh.get_server_host_key(host=target.ip,
-                                                                     port=target.port)
+                    future_connection = _get_server_host_key(host=target.ip,
+                                                                     port=target.port,
+                                                                     client_version='AsyncSSHChecker')
                     status = True
 
                 if status:
-                    key = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
+                    server_version, key = await asyncio.wait_for(future_connection, timeout=target.timeout_connection)
 
                 if key:
                     function_hash = default_host_key_algorithms[algorithm]
@@ -346,19 +454,13 @@ async def worker_single_fingerprint(target: NamedTuple,
                         current_algorithm = algorithm
 
                     _results.append({current_algorithm: {function_hash_name:_key_hex}})
-                    # host_current_algorithm = _host_current_algorithm
-                    # if algorithm != 'None':
-                    #     _hash = default_host_key_algorithms[algorithm].__name__
-                    #     _hash = _hash.lstrip('openssl_')
-                    #     _results.append({host_current_algorithm:
-                    #                        {_hash: _key_hex}})
-                    # else:
-                    #     _results.append({host_current_algorithm: {'sha256': _key_hex}})
             except:
                 pass
         if _results:
             result = b''
             add_info = {'fingerprint': _results}
+            if server_version:
+                add_info['version'] = server_version
             result = make_document_from_response(
                 result, target, add_info)
         else:
