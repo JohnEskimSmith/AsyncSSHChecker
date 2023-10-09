@@ -256,15 +256,17 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
 
 async def work_with_queue_result(queue_out: asyncio.Queue,
                                  filename,
-                                 mode_write) -> tuple[float, int, int]:
+                                 mode_write) -> tuple[float, int, int, str, str]:
+    _z = datetime.datetime.now(datetime.timezone(datetime.timedelta(0))).astimezone().tzinfo
     number_of_successes = 0
     number_of_failed = 0
     start_time = time()
+    start = datetime.datetime.now(tz=_z).strftime("%Y-%m-%dT%H:%M:%S%z")
     if mode_write == 'a':
         method_write_result = write_to_file
     else:
         method_write_result = write_to_stdout
-    _z = datetime.datetime.now(datetime.timezone(datetime.timedelta(0))).astimezone().tzinfo
+
     async with aiofiles_open(filename, mode=mode_write) as file_with_results:
         while True:
             value: tuple[dict, bool] | bytes = await queue_out.get()
@@ -305,8 +307,9 @@ async def work_with_queue_result(queue_out: asyncio.Queue,
                 # endregion
             await method_write_result(file_with_results, ujson_dumps(result_row))
 
-    duration_time_sec = round(time() - start_time, 4)
-    return duration_time_sec, number_of_successes, number_of_failed
+    duration_time_sec = round(time() - start_time, 9)
+    end = datetime.datetime.now(tz=_z).strftime("%Y-%m-%dT%H:%M:%S%z")
+    return duration_time_sec, number_of_successes, number_of_failed, start, end
 
 
 async def main(settings):
@@ -334,11 +337,13 @@ async def main(settings):
     if settings["statistics"]:
         # {"statuses":{"ssh":{"successes":4,"failures":1}},"start":"2023-10-09T00:42:17+03:00","end":"2023-10-09T00:42:20+03:00","duration":"3.067355464s"}
         count_input = task_read_in.result()
-        duration_time_sec, count_good, count_error = task_output.result()
+        duration_time_sec, count_good, count_error, start, end = task_output.result()
         statistics_output = {"statuses": {"ssh": {"successes": count_good,
                                                   "failures": count_error,
                                                   "valid": count_input}},
-                             "duration": duration_time_sec}
+                             "start": start,
+                             "end": end,
+                             "duration": f"{duration_time_sec}s"}
         async with aiofiles_open("/dev/stdout", mode="wb") as stats:
             await stats.write(ujson_dumps(statistics_output).encode("utf-8") + b"\n")
 
