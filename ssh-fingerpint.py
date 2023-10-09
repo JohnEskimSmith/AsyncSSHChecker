@@ -47,12 +47,6 @@ def create_target_ssh_protocol(ip_str: str,
 
 def create_targets_ssh_protocol(ip_str: str,
                                 port: int) -> Iterator[NamedTuple]:
-    """
-    Функция для обработки "подсетей" и создания "целей"
-    :param ip_str:
-    :param settings:
-    :return:
-    """
     hosts = IPv4Network(ip_str, strict=False)
     for host in hosts:
         for target in create_target_ssh_protocol(str(host), port):
@@ -109,7 +103,7 @@ async def write_to_file(object_file: TextIO,
 
 async def read_input_stdin(queue_input: asyncio.Queue,
                            settings: dict,
-                           path_to_file: str="") -> int:
+                           path_to_file: str = "") -> int:
     count_input = 0
     while True:
         try:
@@ -279,7 +273,7 @@ async def work_with_queue_result(queue_out: asyncio.Queue,
                 # region copy like from zgrab2 ssh module
                 result_row = {"ip": target.ip,
                               "port": target.port,
-                              "data":{"ssh": {}}}
+                              "data": {"ssh": {}}}
                 result_row["data"]["ssh"]["status"] = "success"
                 result_row["data"]["ssh"]["protocol"] = "ssh"
                 result_row["data"]["ssh"]["timestamp"] = datetime.datetime.now(tz=_z).strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -324,7 +318,11 @@ async def main(settings):
     mode_write = settings["mode_write"]
 
     read_input = method_create_targets(queue_input, settings, path_to_file_targets)  # create targets
-    create_tasks = work_with_create_tasks_queue(queue_input, queue_results, queue_prints, task_semaphore, settings["timeout"])  # execution
+    create_tasks = work_with_create_tasks_queue(queue_input,
+                                                queue_results,
+                                                queue_prints,
+                                                task_semaphore,
+                                                settings["timeout"])  # execution
     execute_tasks = work_with_queue_tasks(queue_results, queue_prints)
     print_output = work_with_queue_result(queue_prints, output_file, mode_write)
 
@@ -350,7 +348,7 @@ async def main(settings):
 
 def create_settings(args) -> dict | None:
     if not args.port:
-        print('need set port, exit.')
+        print("need set port, exit.")
         exit(1)
     settings = {}
     settings["senders"] = args.senders
