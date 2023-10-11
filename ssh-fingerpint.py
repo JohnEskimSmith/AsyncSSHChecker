@@ -16,6 +16,7 @@ from sys import version_info
 from typing import (NamedTuple,
                     Iterator,
                     BinaryIO,
+                    Sequence,
                     TextIO,
                     )
 
@@ -25,6 +26,7 @@ import uvloop
 from aioconsole import ainput
 from aiofiles import open as aiofiles_open
 from ujson import dumps as ujson_dumps
+from asyncssh.packet import SSHPacket
 
 CONST_STOP_STAGE = b"STOP"
 
@@ -146,6 +148,34 @@ async def work_with_queue_tasks(queue_results: asyncio.Queue,
         await task
 
 
+def calculate_hassh(payload: bytes) -> str:
+    """
+    parse packet from module: asyncssh.connection function '_process_kexinit'
+    """
+    result = ""
+    try:
+        packet = SSHPacket(packet=payload)
+        packet._idx = 1  # state of the packet(SSHPacket) when entering the function _process_kexinit
+        _ = packet.get_bytes(16)                         # cookie
+        peer_kex_algs = packet.get_namelist()
+        skex = b",".join(peer_kex_algs)
+        peer_host_key_algs = packet.get_namelist()
+        enc_algs_cs = packet.get_namelist()
+        enc_algs_sc = packet.get_namelist()
+        seastc = b",".join(enc_algs_sc)
+        mac_algs_cs = packet.get_namelist()
+        mac_algs_sc = packet.get_namelist()
+        smastc = b",".join(mac_algs_sc)
+        cmp_algs_cs = packet.get_namelist()
+        cmp_algs_sc = packet.get_namelist()
+        scastc = b",".join(cmp_algs_sc)
+        _hash = b";".join([skex, seastc, smastc, scastc])
+        result = md5(_hash).hexdigest()
+    except:
+        pass
+    return result
+
+
 async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
                                local_addr=None, client_version=(),
                                kex_algs=(), config=(), options=None) -> tuple[dict, str]:
@@ -159,6 +189,7 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
     port = target.port
     result = {}
     error = ""
+    hassh_status = False
     for server_host_key_algs in CONST_SERVER_HOST_KEY_ALGS.keys():
         options = asyncssh.SSHClientConnectionOptions(
             options, config=config, host=host, port=port, tunnel=tunnel,
@@ -188,6 +219,9 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
                         result["version"] = server_version
                     except:
                         result["version"] = ""
+                if not hassh_status:
+                    result["hassh"] = calculate_hassh(conn._server_kexinit)
+                    hassh_status = True  # just for only one time execution
                 conn.abort()
                 await conn.wait_closed()
         except:
@@ -200,6 +234,7 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
 async def worker_single_fingerprint(target,
                                     semaphore: asyncio.Semaphore,
                                     queue_out: asyncio.Queue,
+                                    format_shodan: bool = False,
                                     timeout: int = CONST_TIMEOUT) -> None:
 
     value = {}
@@ -213,12 +248,17 @@ async def worker_single_fingerprint(target,
                     timeout=timeout)
             if result:
                 value["version"] = result.get("version")
+                value["hassh"] = result.get("hassh", "")
                 for name, algorithms in CONST_SERVER_HOST_KEY_ALGS.items():
                     if data := result.get(name):
                         value[name] = {}
                         for algorithm in algorithms:
                             function_hash_name = algorithm.__name__.replace("openssl_", "")
                             value[name][function_hash_name] = algorithm(data.public_data).hexdigest()
+                            if format_shodan and function_hash_name == "md5":
+                                value[name]["md5_shodan"] = \
+                                    ':'.join(value[name][function_hash_name][i:i + 2]
+                                             for i in range(0, len( value[name][function_hash_name]), 2))
                     status = True
             else:
                 error = error_message
@@ -235,7 +275,8 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
                                        queue_with_tasks: asyncio.Queue,
                                        queue_out: asyncio.Queue,
                                        semaphore: asyncio.Semaphore,
-                                       timeout: int) -> None:
+                                       timeout: int,
+                                       format_shodan: bool = False) -> None:
 
     while True:
         item = await queue_with_input.get()  # item is a Target
@@ -244,7 +285,7 @@ async def work_with_create_tasks_queue(queue_with_input: asyncio.Queue,
             break
         elif item:
             await queue_with_tasks.put(
-                asyncio.create_task(worker_single_fingerprint(item, semaphore, queue_out, timeout=timeout))
+                asyncio.create_task(worker_single_fingerprint(item, semaphore, queue_out, format_shodan=format_shodan, timeout=timeout))
             )
 
 
@@ -278,6 +319,7 @@ async def work_with_queue_result(queue_out: asyncio.Queue,
                 result_row["data"]["ssh"]["protocol"] = "ssh"
                 result_row["data"]["ssh"]["timestamp"] = datetime.datetime.now(tz=_z).strftime("%Y-%m-%dT%H:%M:%S%z")
                 result_row["data"]["ssh"]["result"] = {}
+                result_row["data"]["ssh"]["result"]["hash"] = line.get("hassh", "")
                 result_row["data"]["ssh"]["result"]["server_id"] = {}
                 result_row["data"]["ssh"]["result"]["server_id"]["raw"] = line.get("version", "")
                 result_row["data"]["ssh"]["result"]["key_exchange"] = {}
@@ -306,7 +348,7 @@ async def work_with_queue_result(queue_out: asyncio.Queue,
     return duration_time_sec, number_of_successes, number_of_failed, start, end
 
 
-async def main(settings):
+async def main(settings: dict) -> None:
     queue_input = asyncio.Queue()
     queue_results = asyncio.Queue()
     queue_prints = asyncio.Queue()
@@ -322,7 +364,8 @@ async def main(settings):
                                                 queue_results,
                                                 queue_prints,
                                                 task_semaphore,
-                                                settings["timeout"])  # execution
+                                                settings["timeout"],
+                                                format_shodan=settings["shodan"])  # execution
     execute_tasks = work_with_queue_tasks(queue_results, queue_prints)
     print_output = work_with_queue_result(queue_prints, output_file, mode_write)
 
@@ -376,6 +419,7 @@ def create_settings(args) -> dict | None:
 
     settings["statistics"] = args.statistics
     settings["timeout"] = args.timeout
+    settings["shodan"] = args.shodan
     return settings
 
 
@@ -423,6 +467,11 @@ if __name__ == "__main__":
         type=int,
         default=CONST_TIMEOUT,
         help=f"Timeout for connect to SSH (default: {CONST_TIMEOUT})")
+
+    parser.add_argument(
+        "--shodan-format-md5",
+        dest="shodan",
+        action="store_true")
 
     parser.add_argument(
         "--show-statistics",
