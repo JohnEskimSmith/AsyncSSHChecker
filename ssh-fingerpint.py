@@ -25,8 +25,9 @@ import uvloop
 
 from aioconsole import ainput
 from aiofiles import open as aiofiles_open
-from ujson import dumps as ujson_dumps
 from asyncssh.packet import SSHPacket
+from asyncssh.misc import ConnectionLost, DisconnectError
+from ujson import dumps as ujson_dumps
 
 CONST_STOP_STAGE = b"STOP"
 
@@ -184,6 +185,13 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
         current_loop = asyncio.get_event_loop()
         return asyncssh.SSHClientConnection(current_loop, options, wait="kex")
 
+    async def like_shutdown_conn(connection) -> None:
+        try:
+            connection.abort()
+            await connection.wait_closed()
+        except:
+            pass
+
     current_loop = asyncio.get_event_loop()
     host = target.ip
     port = target.port
@@ -197,7 +205,7 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
             server_host_key_algs=server_host_key_algs, x509_trusted_certs=None,
             x509_trusted_cert_paths=None, x509_purposes="any", gss_host=None,
             kex_algs=kex_algs, client_version=client_version)
-
+        conn = None
         try:
             try:
                 conn = await asyncssh.connection._connect(options=options,
@@ -209,6 +217,25 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
             except OSError as oserror:
                 if oserror.errno == 113:
                     error = f"dial tcp {host}:{port}: connect: no route to host"
+                    await like_shutdown_conn(conn)
+                    break
+            except ConnectionLost:
+                if not result:
+                    error = f"dial tcp {host}:{port}: ConnectionLost"
+                    if conn:
+                        await like_shutdown_conn(conn)
+                    break
+            except DisconnectError:
+                if not result:
+                    error = f"dial tcp {host}:{port}: DisconnectError"
+                    if conn:
+                        await like_shutdown_conn(conn)
+                    break
+            except Exception as exp:
+                if not result:
+                    error = f"dial tcp {host}:{port}: {str(exp)}"
+                    if conn:
+                        await like_shutdown_conn(conn)
                     break
             else:
                 server_host_key = conn.get_server_host_key()
@@ -224,8 +251,10 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
                     hassh_status = True  # just for only one time execution
                 conn.abort()
                 await conn.wait_closed()
-        except:
-            error = "unknow-error"
+        except Exception as exp:
+            error = f"unknow-error: {exp}"
+            if conn:
+                await like_shutdown_conn(conn)
     if not result and not error:
         error = "unknow-error"
     return result, error
