@@ -224,7 +224,6 @@ async def _get_server_host_key(target, *, tunnel=(), family=(), flags=0,
                     error = f"dial tcp {host}:{port}: ConnectionLost"
                     if conn:
                         await like_shutdown_conn(conn)
-                    break
             except DisconnectError:
                 if not result:
                     error = f"dial tcp {host}:{port}: DisconnectError"
