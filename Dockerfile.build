@@ -1,0 +1,19 @@
+FROM ubuntu:18.04 as build
+RUN apt update && apt-get install -y build-essential \
+    gcc apt-transport-https ca-certificates curl \
+    gnupg-agent software-properties-common wget patchelf zlib1g-dev
+RUN DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get -y install tzdata \
+    libssl-dev libncurses5-dev libsqlite3-dev libffi-dev tk-dev ccache
+RUN mkdir -p /tmp/python && cd /tmp/python/ && wget https://www.python.org/ftp/python/3.11.4/Python-3.11.4.tgz && tar -xf Python-3.11.*.tgz
+RUN cd /tmp/python/Python-3.11.4/ && ./configure --enable-optimizations &&  make -j $(nproc) && make altinstall
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+RUN pip install nuitka
+RUN mkdir /asyncsshfingerprint
+COPY requirements.txt /asyncsshfingerprint/requirements.txt
+RUN pip install -r /asyncsshfingerprint/requirements.txt
+COPY ssh-fingerpint.py /asyncsshfingerprint/ssh-fingerpint.py
+WORKDIR /asyncsshfingerprint
+RUN nuitka3 --follow-imports --standalone --onefile ssh-fingerpint.py
+
+FROM scratch AS export-stage
+COPY --from=build /asyncsshfingerprint/ssh-fingerpint.bin /
